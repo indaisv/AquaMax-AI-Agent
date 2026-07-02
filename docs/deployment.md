@@ -109,7 +109,7 @@ curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker ubuntu
 
 # Clone and deploy
-git clone https://github.com/<your-username>/aquamax-agent.git
+git clone https://github.com/indaisv/aquamax-agent.git
 cd aquamax-agent
 
 # Create .env

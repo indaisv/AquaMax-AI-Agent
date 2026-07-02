@@ -28,7 +28,7 @@ A production-ready AI Agent built for **AquaMax Rehab Equipment** that automates
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/<your-username>/aquamax-agent.git
+git clone https://github.com/indaisv/aquamax-agent.git
 cd aquamax-agent
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
@@ -184,5 +184,5 @@ MIT — Built for portfolio and educational purposes.
 
 **Viraj Indais** — AI Automation Engineer | Data Scientist
 - [LinkedIn](https://linkedin.com/in/viraj-indais)
-- [GitHub](https://github.com/viraj-indais)
+- [GitHub](https://github.com/indaisv)
 - [Email](mailto:indaisviraj@gmail.com)

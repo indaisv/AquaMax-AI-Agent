@@ -37,7 +37,7 @@ def draft_email(
         tone_templates = {
             "professional": {
                 "greeting": f"Dear {recipient_name},",
-                "closing": "Best regards,\nAquaMax Rehab Equipment Sales Team\nPhone: +91-22-XXXX-XXXX | Email: sales@aquamax-rehab.com",
+                "closing": "Best regards,\nAquaMax Rehab Equipment Sales Team\nPhone: +91-22-4000-5000 | Email: sales@aquamax-rehab.com",
             },
             "friendly": {
                 "greeting": f"Hi {recipient_name},",

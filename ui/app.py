@@ -334,7 +334,7 @@ elif page == "📄 About":
     
     **Viraj Indais** — AI Automation Engineer | Data Scientist
     - [LinkedIn](https://linkedin.com/in/viraj-indais)
-    - [GitHub](https://github.com/viraj-indais)
+    - [GitHub](https://github.com/indaisv)
     - [Email](mailto:indaisviraj@gmail.com)
     
     ---
