@@ -20,8 +20,8 @@ def generate_quotation(
     session_id: str,
     product_ids: str,
     customer_email: str | None = None,
-    discount_percent: float = 0.0,
-    validity_days: int = 30,
+    discount_percent: float | str = 0.0,
+    validity_days: int | str = 30,
     notes: str | None = None,
 ) -> str:
     """Generate a formal quotation for selected products.
@@ -37,6 +37,18 @@ def generate_quotation(
         notes: Additional notes or terms
     """
     try:
+        # Groq Llama3 sometimes passes numeric params as strings; convert safely
+        if isinstance(discount_percent, str):
+            try:
+                discount_percent = float(discount_percent)
+            except ValueError:
+                discount_percent = 0.0
+        if isinstance(validity_days, str):
+            try:
+                validity_days = int(validity_days)
+            except ValueError:
+                validity_days = 30
+
         ids = [int(x.strip()) for x in product_ids.split(",") if x.strip().isdigit()]
         if not ids:
             return "Please provide at least one product ID for the quotation."
@@ -50,13 +62,11 @@ def generate_quotation(
             if not products:
                 return f"No products found with IDs: {product_ids}. Please check the product IDs."
 
-            # Calculate pricing
             subtotal = sum(p.price for p in products)
             discount = subtotal * (discount_percent / 100.0)
-            tax = (subtotal - discount) * 0.18  # 18% GST
+            tax = (subtotal - discount) * 0.18
             total = subtotal - discount + tax
 
-            # Find lead
             lead_id = None
             if customer_email:
                 lead = lead_repo.get_by_email(customer_email)
@@ -67,7 +77,6 @@ def generate_quotation(
                 if lead:
                     lead_id = lead.id
 
-            # Build product list
             product_list = []
             for p in products:
                 product_list.append({
@@ -109,10 +118,7 @@ def generate_quotation(
             for p in products:
                 lines.append(f"- {p.name} (SKU: {p.sku}) — {format_currency(p.price)}")
 
-            lines.extend([
-                "",
-                f"**Subtotal:** {format_currency(subtotal)}",
-            ])
+            lines.extend(["", f"**Subtotal:** {format_currency(subtotal)}"])
             if discount > 0:
                 lines.append(f"**Discount ({discount_percent}%):** -{format_currency(discount)}")
             lines.extend([

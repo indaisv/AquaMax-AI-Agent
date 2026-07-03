@@ -81,7 +81,7 @@ class Lead(Base):
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )
-    metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    meta_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     def to_dict(self) -> dict:
         return {
@@ -97,7 +97,7 @@ class Lead(Base):
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-            "metadata": self.metadata or {},
+            "meta_data": self.meta_data or {},
         }
 
 
@@ -113,7 +113,7 @@ class Conversation(Base):
     timestamp: Mapped[datetime.datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
-    metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    meta_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     def to_dict(self) -> dict:
         return {
@@ -122,7 +122,7 @@ class Conversation(Base):
             "role": self.role,
             "content": self.content,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
-            "metadata": self.metadata or {},
+            "meta_data": self.meta_data or {},
         }
 
 

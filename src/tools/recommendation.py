@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 
 from langchain_core.tools import tool
@@ -18,7 +19,7 @@ logger = get_logger(__name__)
 
 
 @tool
-def recommend_products(requirements: str, budget: str | None = None, top_k: int = 3) -> str:
+def recommend_products(requirements: str, budget: str | None = None, top_k: int | str = 3) -> str:
     """Recommend the best rehabilitation equipment based on customer requirements and budget.
 
     Use this tool when the user describes their needs, condition, or clinic setup and wants product suggestions.
@@ -30,23 +31,26 @@ def recommend_products(requirements: str, budget: str | None = None, top_k: int 
         top_k: Number of recommendations to return (default 3, max 5)
     """
     try:
+        # Groq Llama3 sometimes passes top_k as a string; convert safely
+        if isinstance(top_k, str):
+            try:
+                top_k = int(top_k)
+            except ValueError:
+                top_k = 3
         top_k = min(max(top_k, 1), 5)
+
         budget_max = None
         if budget:
             budget_lower = budget.lower()
             if "under" in budget_lower or "below" in budget_lower or "less than" in budget_lower:
-                # Extract number
-                import re
                 nums = re.findall(r"\d+", budget_lower)
                 if nums:
                     budget_max = float(nums[0])
-                    # Handle lakh/crore
                     if "lakh" in budget_lower or "lac" in budget_lower:
                         budget_max *= 100000
                     elif "crore" in budget_lower:
                         budget_max *= 10000000
             elif "-" in budget:
-                import re
                 nums = re.findall(r"\d+", budget_lower)
                 if len(nums) >= 2:
                     budget_max = float(nums[1])
@@ -55,38 +59,27 @@ def recommend_products(requirements: str, budget: str | None = None, top_k: int 
 
         with get_session() as session:
             repo = ProductRepository(session)
-            # Search by requirements
             candidates: list[Product] = repo.search(requirements, max_price=budget_max)
             if not candidates:
                 candidates = repo.filter_by_condition(requirements)
             if not candidates:
                 candidates = repo.list_all(limit=20)
 
-            # Score each product
             scored = []
             for p in candidates:
                 score = 0.0
                 data = p.to_dict()
-
-                # Rating score (0-30)
                 score += (p.rating / 5.0) * 30
-
-                # Stock score (0-20)
                 score += min(p.stock / 100, 1.0) * 20
-
-                # Condition match (0-30)
                 req_lower = requirements.lower()
                 tags = [t.lower() for t in data.get("condition_tags", [])]
                 tag_matches = sum(1 for t in tags if any(word in t for word in req_lower.split()))
                 score += min(tag_matches / 3, 1.0) * 30
-
-                # Budget fit (0-20)
                 if budget_max:
                     if p.price <= budget_max:
                         score += (1 - (p.price / budget_max)) * 20
                 else:
-                    score += 10  # Neutral if no budget
-
+                    score += 10
                 scored.append((score, p))
 
             scored.sort(key=lambda x: x[0], reverse=True)
@@ -107,7 +100,6 @@ def recommend_products(requirements: str, budget: str | None = None, top_k: int 
                 features = ", ".join(data["features"][:3]) if data["features"] else ""
                 tags = [t.strip() for t in (p.condition_tags or "").split(",") if t.strip()]
                 relevant_tags = [t for t in tags if any(word in t.lower() for word in requirements.lower().split())]
-
                 lines.append(
                     f"{i}. **{data['name']}** — ₹{data['price']:,.2f}\n"
                     f"   - **Match Score:** {score:.1f}/100 | **Rating:** {data['rating']}/5.0\n"
@@ -117,7 +109,6 @@ def recommend_products(requirements: str, budget: str | None = None, top_k: int 
                     f"   - {data['description'][:150]}...\n"
                 )
 
-            # Summary
             lines.append("\nWould you like me to compare these products, generate a quotation, or provide more details about any specific item?")
             return "\n".join(lines)
 

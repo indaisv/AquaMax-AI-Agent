@@ -69,7 +69,7 @@ class ConversationMemory:
                     session_id=session_id,
                     role=role,
                     content=content,
-                    metadata=metadata,
+                    meta_data=metadata,
                 )
                 repo.create(conv)
         except Exception as e:

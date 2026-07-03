@@ -11,11 +11,10 @@ from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from src.config.settings import settings
-from src.core.exceptions import LLMError, ToolError
 from src.core.memory import memory_manager
-from src.core.state import AgentState, create_initial_state
+from src.core.state import AgentState
 from src.tools import ALL_TOOLS
-from src.utils.helpers import extract_json, sanitize_input
+from src.utils.helpers import extract_json
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -42,11 +41,11 @@ def classify_intent(state: AgentState) -> AgentState:
     try:
         messages = state["messages"]
         if not messages:
-            return {**state, "intent": "general", "next_node": "build_response"}
+            return {**state, "intent": "general"}
 
         last_message = messages[-1]
         if not isinstance(last_message, HumanMessage):
-            return {**state, "intent": "general", "next_node": "build_response"}
+            return {**state, "intent": "general"}
 
         llm = _get_llm()
 
@@ -75,11 +74,11 @@ def classify_intent(state: AgentState) -> AgentState:
             intent = "general"
 
         logger.info("Intent classified: %s for session %s", intent, state["session_id"])
-        return {**state, "intent": intent, "next_node": None}
+        return {**state, "intent": intent}
 
     except Exception as e:
         logger.error("Intent classification failed: %s", e)
-        return {**state, "intent": "general", "error": str(e), "next_node": "error_handler"}
+        return {**state, "intent": "general", "error": str(e)}
 
 
 # ───────────────────────────────────────────────────────────────
@@ -91,9 +90,8 @@ def extract_entities(state: AgentState) -> AgentState:
     try:
         messages = state["messages"]
         if not messages:
-            return {**state, "next_node": None}
+            return {**state}
 
-        # Combine recent messages for context
         conversation_text = "\n".join(
             f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}"
             for m in messages[-6:]
@@ -120,7 +118,6 @@ def extract_entities(state: AgentState) -> AgentState:
         parsed = extract_json(response.content)
 
         if parsed:
-            # Merge with existing customer info
             existing = state.get("customer_info", {})
             merged = {**existing, **{k: v for k, v in parsed.items() if v is not None}}
             return {**state, "customer_info": merged, "extracted_entities": parsed}
@@ -133,39 +130,33 @@ def extract_entities(state: AgentState) -> AgentState:
 
 
 # ───────────────────────────────────────────────────────────────
-# Node: Build Response (final response to user)
+# Node: LLM Response (with tools bound)
 # ───────────────────────────────────────────────────────────────
 
-def build_response(state: AgentState) -> AgentState:
-    """Build the final AI response to the user, incorporating tool results."""
+def llm_response(state: AgentState) -> AgentState:
+    """Invoke the LLM with tools bound. May return tool calls or plain text."""
     try:
         messages = state["messages"]
         llm = _get_llm()
-
-        # Bind tools to the LLM for this final response
         llm_with_tools = llm.bind_tools(ALL_TOOLS)
 
-        # Get system message + history + current user message
         system_msg = memory_manager.get_system_message()
         all_messages = [system_msg] + list(messages)
 
         response = llm_with_tools.invoke(all_messages)
-
-        # Check if the LLM wants to call a tool
-        if hasattr(response, "tool_calls") and response.tool_calls:
-            # Return with tool call requests for the next step
-            return {**state, "messages": messages + [response]}
-
-        # Plain text response
-        return {**state, "messages": messages + [AIMessage(content=response.content)]}
+        return {**state, "messages": messages + [response]}
 
     except Exception as e:
-        logger.error("Response building failed: %s", e)
+        logger.error("LLM response failed: %s", e)
         error_msg = (
             "I apologize, but I'm having trouble processing your request right now. "
-            "Please try again or contact our support team at sales@aquamax-rehab.com."
+            "Please try again or contact our support team."
         )
-        return {**state, "messages": messages + [AIMessage(content=error_msg)], "error": str(e)}
+        return {
+            **state,
+            "messages": messages + [AIMessage(content=error_msg)],
+            "error": str(e),
+        }
 
 
 # ───────────────────────────────────────────────────────────────
@@ -204,37 +195,33 @@ tool_node = ToolNode(ALL_TOOLS)
 # ───────────────────────────────────────────────────────────────
 
 def route_after_intent(state: AgentState) -> str:
-    """Route to the appropriate node based on classified intent."""
-    intent = state.get("intent", "general")
-    error = state.get("error")
-    if error:
+    """After intent classification, always go to LLM response."""
+    if state.get("error"):
+        return "error_handler"
+    return "llm_response"
+
+
+def route_after_llm(state: AgentState) -> str:
+    """After LLM response, check if it wants to call tools or is done."""
+    if state.get("error"):
         return "error_handler"
 
-    routing_map = {
-        "search": "tools",
-        "compare": "tools",
-        "recommend": "tools",
-        "lead": "tools",
-        "quote": "tools",
-        "email": "tools",
-        "general": "build_response",
-    }
-    return routing_map.get(intent, "build_response")
+    messages = state.get("messages", [])
+    if not messages:
+        return "extract_entities"
+
+    last_message = messages[-1]
+    if isinstance(last_message, AIMessage) and getattr(last_message, "tool_calls", None):
+        return "tools"
+
+    return "extract_entities"
 
 
 def route_after_tools(state: AgentState) -> str:
-    """After tools execute, route back to response building or error handling."""
+    """After tools execute, route back to LLM to process tool results."""
     if state.get("error"):
         return "error_handler"
-    return "build_response"
-
-
-def route_after_response(state: AgentState) -> str:
-    """After response building, check if we need to extract entities or end."""
-    if state.get("error"):
-        return "error_handler"
-    # Check if we need to extract entities from this turn
-    return "extract_entities"
+    return "llm_response"
 
 
 # ───────────────────────────────────────────────────────────────
@@ -242,54 +229,65 @@ def route_after_response(state: AgentState) -> str:
 # ───────────────────────────────────────────────────────────────
 
 def build_agent_graph() -> StateGraph:
-    """Construct and return the compiled LangGraph state graph."""
+    """Construct and return the compiled LangGraph state graph.
+
+    Flow:
+        classify_intent → llm_response → router
+                          ↑                |
+                          |           tools (if tool_calls)
+                          |                |
+                          └────────────────┘
+                          |
+                          v
+                    extract_entities → END
+    """
     workflow = StateGraph(AgentState)
 
     # Add nodes
     workflow.add_node("classify_intent", classify_intent)
     workflow.add_node("extract_entities", extract_entities)
-    workflow.add_node("build_response", build_response)
+    workflow.add_node("llm_response", llm_response)
     workflow.add_node("error_handler", error_handler)
     workflow.add_node("tools", tool_node)
 
-    # Add edges
+    # Entry point
     workflow.set_entry_point("classify_intent")
 
-    # After intent classification, route to tools or response building
+    # classify_intent → llm_response (always)
     workflow.add_conditional_edges(
         "classify_intent",
         route_after_intent,
         {
+            "llm_response": "llm_response",
+            "error_handler": "error_handler",
+        },
+    )
+
+    # llm_response → tools (if tool_calls) OR extract_entities (if done)
+    workflow.add_conditional_edges(
+        "llm_response",
+        route_after_llm,
+        {
             "tools": "tools",
-            "build_response": "build_response",
-            "error_handler": "error_handler",
-        },
-    )
-
-    # After tools, route to response building or error handler
-    workflow.add_conditional_edges(
-        "tools",
-        route_after_tools,
-        {
-            "build_response": "build_response",
-            "error_handler": "error_handler",
-        },
-    )
-
-    # After response, extract entities then end
-    workflow.add_conditional_edges(
-        "build_response",
-        route_after_response,
-        {
             "extract_entities": "extract_entities",
             "error_handler": "error_handler",
         },
     )
 
-    # After entity extraction, end the turn
+    # tools → llm_response (loop back to process tool results)
+    workflow.add_conditional_edges(
+        "tools",
+        route_after_tools,
+        {
+            "llm_response": "llm_response",
+            "error_handler": "error_handler",
+        },
+    )
+
+    # extract_entities → END
     workflow.add_edge("extract_entities", END)
 
-    # Error handler always ends
+    # Error handler → END
     workflow.add_edge("error_handler", END)
 
     return workflow.compile()
