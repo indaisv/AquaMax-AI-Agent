@@ -30,6 +30,52 @@ class ProductRepository:
     def list_all(self, limit: int = 100, offset: int = 0) -> list[Product]:
         return self._session.query(Product).offset(offset).limit(limit).all()
 
+    def search_by_keywords(self, keywords: list[str], category: str | None = None, max_price: float | None = None) -> list[Product]:
+        """Search products by individual keywords, ranked by relevance (more matches = higher)."""
+        if not keywords:
+            return []
+        
+        # Build OR conditions for each keyword across all searchable fields
+        conditions = []
+        for kw in keywords:
+            if len(kw) >= 2:  # Skip single-character keywords
+                q = f"%{kw}%"
+                conditions.append(
+                    or_(
+                        Product.name.ilike(q),
+                        Product.description.ilike(q),
+                        Product.category.ilike(q),
+                        Product.subcategory.ilike(q),
+                        Product.condition_tags.ilike(q),
+                        Product.sku.ilike(q),
+                    )
+                )
+        
+        if not conditions:
+            return []
+        
+        query = self._session.query(Product).filter(or_(*conditions))
+        
+        if category:
+            query = query.filter(Product.category.ilike(f"%{category}%"))
+        if max_price is not None:
+            query = query.filter(Product.price <= max_price)
+        
+        # Get all candidates, then rank by keyword match count
+        candidates = query.all()
+        
+        scored = []
+        for p in candidates:
+            score = 0
+            p_text = f"{p.name} {p.description} {p.category} {p.subcategory} {p.condition_tags} {p.sku}".lower()
+            for kw in keywords:
+                if len(kw) >= 2 and kw in p_text:
+                    score += 1
+            scored.append((score, p))
+        
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [p for _, p in scored]
+
     def search(self, query: str, category: str | None = None, max_price: float | None = None) -> list[Product]:
         """Fuzzy search across name, description, category, and condition tags."""
         q = f"%{query}%"

@@ -59,9 +59,26 @@ def recommend_products(requirements: str, budget: str | None = None, top_k: int 
 
         with get_session() as session:
             repo = ProductRepository(session)
-            candidates: list[Product] = repo.search(requirements, max_price=budget_max)
+            
+            # Split requirements into keywords for better matching
+            keywords = [kw.strip() for kw in requirements.split() if len(kw.strip()) >= 2]
+            if not keywords:
+                keywords = [requirements]
+            
+            # Try keyword search first
+            candidates: list[Product] = repo.search_by_keywords(keywords, max_price=budget_max)
+            
+            # Fallback to condition search with individual keywords
             if not candidates:
-                candidates = repo.filter_by_condition(requirements)
+                for kw in keywords:
+                    condition_results = repo.filter_by_condition(kw)
+                    if condition_results:
+                        candidates.extend(condition_results)
+                # Deduplicate
+                seen = set()
+                candidates = [p for p in candidates if not (p.id in seen or seen.add(p.id))]
+            
+            # Final fallback: list all products
             if not candidates:
                 candidates = repo.list_all(limit=20)
 

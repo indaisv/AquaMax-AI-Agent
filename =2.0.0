@@ -1,4 +1,0 @@
-Resolved 7 packages in 125ms
-Prepared 1 package in 28ms
-Installed 1 package in 11ms
- + pydantic-settings==2.14.2

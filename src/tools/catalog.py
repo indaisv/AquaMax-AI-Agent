@@ -36,12 +36,29 @@ def search_products(query: str, category: str | None = None, max_price: float | 
     try:
         with get_session() as session:
             repo = ProductRepository(session)
-            results: list[Product] = repo.search(query, category=category, max_price=max_price)
-
+            
+            # Split query into keywords for better matching
+            keywords = [kw.strip() for kw in query.split() if len(kw.strip()) >= 2]
+            if not keywords:
+                keywords = [query]
+            
+            # Try keyword search first
+            results: list[Product] = repo.search_by_keywords(keywords, category=category, max_price=max_price)
+            
+            # Fallback to phrase search if keyword search returns nothing
             if not results:
-                # Try broader condition-based search
-                results = repo.filter_by_condition(query)
-
+                results = repo.search(query, category=category, max_price=max_price)
+            
+            if not results:
+                # Try condition-based search with individual keywords
+                for kw in keywords:
+                    condition_results = repo.filter_by_condition(kw)
+                    if condition_results:
+                        results.extend(condition_results)
+                # Deduplicate
+                seen = set()
+                results = [p for p in results if not (p.id in seen or seen.add(p.id))]
+            
             if not results:
                 return (
                     f"No products found for '{query}'.\n"

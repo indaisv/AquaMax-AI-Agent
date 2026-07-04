@@ -1,20 +1,30 @@
-"""LangGraph state graph definition for the AquaMax AI Agent."""
+"""LangGraph state graph definition for the AquaMax AI Agent.
+
+Hybrid approach: rule-based tool dispatch + LLM response generation.
+We ALWAYS call relevant tools for product queries, then pass real results
+to the LLM for a sales-quality response. No model-dependent tool calling.
+"""
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
-from langgraph.prebuilt import ToolNode
 
 from src.config.settings import settings
 from src.core.memory import memory_manager
 from src.core.state import AgentState
-from src.tools import ALL_TOOLS
-from src.utils.helpers import extract_json
+from src.tools import (
+    capture_lead,
+    compare_products,
+    draft_email,
+    generate_quotation,
+    recommend_products,
+    search_products,
+)
+from src.utils.helpers import extract_json, sanitize_input
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -33,85 +43,201 @@ def _get_llm() -> ChatOpenAI:
 
 
 # ───────────────────────────────────────────────────────────────
-# Node: Intent Classification
+# Node: Dispatch Tools (rule-based — always calls relevant tools)
 # ───────────────────────────────────────────────────────────────
 
-def classify_intent(state: AgentState) -> AgentState:
-    """Classify the user's intent from their latest message."""
+def dispatch_tools(state: AgentState) -> AgentState:
+    """Always call relevant tools based on the user's message, then add results to state.
+
+    This avoids model-dependent tool calling. We extract keywords from the user's
+    message and call the appropriate tools directly. The LLM only handles the
+    final response generation using real tool results.
+    """
     try:
-        messages = state["messages"]
-        if not messages:
-            return {**state, "intent": "general"}
-
-        last_message = messages[-1]
-        if not isinstance(last_message, HumanMessage):
-            return {**state, "intent": "general"}
-
-        llm = _get_llm()
-
-        prompt = (
-            "You are an intent classifier for a rehabilitation equipment sales assistant.\n"
-            "Classify the user's intent into EXACTLY one of these categories:\n"
-            "- search: Looking for specific equipment or browsing catalog\n"
-            "- compare: Comparing multiple products or asking for differences\n"
-            "- recommend: Asking for recommendations or suggestions\n"
-            "- lead: Providing contact info or showing purchase intent\n"
-            "- quote: Asking for price, quotation, or pricing details\n"
-            "- email: Requesting a follow-up email or contact\n"
-            "- general: General question, greeting, or small talk\n\n"
-            "Respond ONLY with a JSON object like: {\"intent\": \"search\", \"confidence\": 0.9}\n\n"
-            f"User message: {last_message.content}"
-        )
-
-        response = llm.invoke([HumanMessage(content=prompt)])
-        parsed = extract_json(response.content)
-
-        if parsed and "intent" in parsed:
-            intent = parsed["intent"].lower().strip()
-            valid_intents = {"search", "compare", "recommend", "lead", "quote", "email", "general"}
-            intent = intent if intent in valid_intents else "general"
-        else:
-            intent = "general"
-
-        logger.info("Intent classified: %s for session %s", intent, state["session_id"])
-        return {**state, "intent": intent}
-
-    except Exception as e:
-        logger.error("Intent classification failed: %s", e)
-        return {**state, "intent": "general", "error": str(e)}
-
-
-# ───────────────────────────────────────────────────────────────
-# Node: Entity Extraction
-# ───────────────────────────────────────────────────────────────
-
-def extract_entities(state: AgentState) -> AgentState:
-    """Extract customer information and requirements from the conversation."""
-    try:
-        messages = state["messages"]
+        messages = list(state.get("messages", []))
+        session_id = state.get("session_id", "")
         if not messages:
             return {**state}
 
-        conversation_text = "\n".join(
-            f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}"
-            for m in messages[-6:]
+        # Get the last user message
+        user_msgs = [m for m in messages if isinstance(m, HumanMessage)]
+        if not user_msgs:
+            return {**state}
+        user_text = user_msgs[-1].content.lower()
+
+        tools_called: list[str] = []
+        tool_results: list[str] = []
+
+        # Always call search_products for product-related queries
+        if any(kw in user_text for kw in [
+            "need", "want", "looking", "tens", "ultrasound", "wheelchair", "walker",
+            "equipment", "device", "machine", "unit", "rehab", "therapy", "pain",
+            "back", "knee", "shoulder", "clinic", "hospital", "recommend", "suggest",
+            "best", "good", "which", "what", "show", "find", "search", "catalog"
+        ]):
+            result = search_products.invoke({"query": user_text, "category": None, "max_price": None})
+            tools_called.append("search_products")
+            tool_results.append(f"[SEARCH RESULTS]\n{result}")
+
+            # Also call recommend_products for richer recommendations
+            result2 = recommend_products.invoke({"requirements": user_text, "budget": None, "top_k": 3})
+            tools_called.append("recommend_products")
+            tool_results.append(f"[RECOMMENDATION RESULTS]\n{result2}")
+
+        # Call compare_products if user asks to compare
+        if any(kw in user_text for kw in ["compare", "vs", "versus", "difference", "better"]):
+            # Try to extract product IDs from the message (naive approach)
+            # For now, compare first two products from search results
+            # This will be improved by passing IDs from previous results
+            pass  # Requires product IDs from previous context
+
+        # Call capture_lead if user provides contact info
+        if any(kw in user_text for kw in ["name is", "my name", "email", "phone", "contact", "call me", "reach me"]):
+            # Extract entities
+            name = None
+            email = None
+            phone = None
+            org = None
+            for line in user_text.split("\n"):
+                if "name is" in line or "my name" in line:
+                    name = line.split("is")[-1].strip() if "is" in line else line.split("name")[-1].strip()
+                    name = name.strip(".")
+                if "email" in line:
+                    import re
+                    emails = re.findall(r"[\w.+-]+@[\w-]+\.[\w.-]+", line)
+                    if emails:
+                        email = emails[0]
+                if "phone" in line or "number" in line:
+                    import re
+                    phones = re.findall(r"[\d\s\-+()]{10,}", line)
+                    if phones:
+                        phone = phones[0]
+
+            if name or email or phone:
+                result = capture_lead.invoke({
+                    "session_id": session_id,
+                    "name": name,
+                    "email": email,
+                    "phone": phone,
+                    "organization": org,
+                })
+                tools_called.append("capture_lead")
+                tool_results.append(f"[LEAD CAPTURE]\n{result}")
+
+        # Call generate_quotation if user asks for quote/price
+        if any(kw in user_text for kw in ["quote", "quotation", "price", "pricing", "cost", "how much"]):
+            # Extract product IDs from message if possible
+            import re
+            ids = re.findall(r"(?:product\s*id|id)\s*[:=]?\s*(\d+)", user_text)
+            if ids:
+                result = generate_quotation.invoke({
+                    "session_id": session_id,
+                    "product_ids": ",".join(ids),
+                    "discount_percent": 0.0,
+                    "validity_days": 30,
+                })
+                tools_called.append("generate_quotation")
+                tool_results.append(f"[QUOTATION]\n{result}")
+
+        # Format results into a clean context message (NOT ToolMessage — Groq doesn't render them well)
+        if tool_results:
+            context = "## REAL PRODUCTS FROM THE AQUAMAX DATABASE\n\n" + "\n\n---\n\n".join(tool_results)
+            messages.append(SystemMessage(content=context))
+
+        return {**state, "messages": messages, "tools_called": tools_called}
+
+    except Exception as e:
+        logger.error("Tool dispatch failed: %s", e)
+        return {**state, "error": str(e)}
+
+
+# ───────────────────────────────────────────────────────────────
+# Node: LLM Respond (generates final sales response using tool results)
+# ───────────────────────────────────────────────────────────────
+
+def llm_respond(state: AgentState) -> AgentState:
+    """Generate the final sales-quality response using the tool results in messages."""
+    try:
+        messages = list(state.get("messages", []))
+        if not messages:
+            return {**state}
+
+        llm = _get_llm()
+
+        # Check if we have database results in the conversation
+        has_tool_results = any(
+            "REAL PRODUCTS FROM THE AQUAMAX DATABASE" in (m.content or "")
+            for m in messages
         )
+
+        if has_tool_results:
+            # Full sales response with product recommendations
+            system_msg = SystemMessage(
+                content=(
+                    "You are AquaMax AI, a senior sales consultant for AquaMax Rehab Equipment.\n\n"
+                    "## CRITICAL RULE: Use ONLY Database Products\n"
+                    "The conversation contains a message starting with '## REAL PRODUCTS FROM THE AQUAMAX DATABASE'. "
+                    "You MUST use ONLY the exact product names, prices, and specs listed there. "
+                    "If you cannot find a specific product mentioned by the customer, say so honestly and suggest the closest match from the database.\n\n"
+                    "## Response Format (mandatory)\n"
+                    "1. Opening: 1 sentence acknowledging their need\n"
+                    "2. Top Pick: Name the BEST product from the database with price (₹X,XXX.00) and why it fits\n"
+                    "3. Alternative: Name ONE backup option with price and brief reason\n"
+                    "4. Practical note: Mention stock, delivery, or warranty if available\n"
+                    "5. Next step: Ask ONE clear question (compare, quote, more details?)\n\n"
+                    "## NEVER Do This\n"
+                    "- Say 'I couldn't find products' when the database section shows products\n"
+                    "- Make up product names like 'Omron' or 'Beurer' — only use AquaMax branded products from the database\n"
+                    "- Give vague responses without specific prices and names\n"
+                )
+            )
+        else:
+            # No tools called — greeting, small talk, or general question
+            system_msg = SystemMessage(
+                content=(
+                    "You are AquaMax AI, a senior sales consultant for AquaMax Rehab Equipment.\n\n"
+                    "The user has NOT asked about specific products yet. "
+                    "Give a warm, brief greeting and ask what kind of rehabilitation equipment they're looking for. "
+                    "DO NOT mention specific products or prices unless the user asks. "
+                    "Keep it under 3 sentences.\n\n"
+                    "Example: 'Hello! I'm here to help you find the right rehabilitation equipment. "
+                    "What condition or body part are you looking to address?'"
+                )
+            )
+
+        all_messages = [system_msg] + messages
+        response = llm.invoke(all_messages)
+        return {**state, "messages": messages + [response]}
+
+    except Exception as e:
+        logger.error("Response generation failed: %s", e)
+        return {**state, "error": str(e)}
+
+
+# ───────────────────────────────────────────────────────────────
+# Node: Extract Entities
+# ───────────────────────────────────────────────────────────────
+
+def extract_entities(state: AgentState) -> AgentState:
+    """Extract customer information from user messages for future turns."""
+    try:
+        messages = state.get("messages", [])
+        if not messages:
+            return {**state}
+
+        user_texts = [m.content for m in messages if isinstance(m, HumanMessage)][-3:]
+        if not user_texts:
+            return {**state}
+
+        conversation_text = "\n".join(f"User: {t}" for t in user_texts)
 
         llm = _get_llm()
         prompt = (
-            "Extract customer information from this conversation. "
+            "Extract customer information from the user's messages. "
             "Return ONLY a JSON object with these fields (use null if not found):\n"
-            "{\n"
-            '  "name": "customer name or null",\n'
-            '  "email": "email or null",\n'
-            '  "phone": "phone or null",\n'
-            '  "organization": "clinic/hospital name or null",\n'
-            '  "budget_range": "budget mentioned or null",\n'
-            '  "condition": "medical condition or use case or null",\n'
-            '  "requirements": "specific equipment needs or null",\n'
-            '  "role": "physiotherapist, clinic owner, patient, etc. or null"\n'
-            "}\n\n"
-            f"Conversation:\n{conversation_text}"
+            '{"name": null, "email": null, "phone": null, "organization": null, '
+            '"budget_range": null, "condition": null, "requirements": null, "role": null}\n\n'
+            f"Messages:\n{conversation_text}"
         )
 
         response = llm.invoke([HumanMessage(content=prompt)])
@@ -130,48 +256,18 @@ def extract_entities(state: AgentState) -> AgentState:
 
 
 # ───────────────────────────────────────────────────────────────
-# Node: LLM Response (with tools bound)
-# ───────────────────────────────────────────────────────────────
-
-def llm_response(state: AgentState) -> AgentState:
-    """Invoke the LLM with tools bound. May return tool calls or plain text."""
-    try:
-        messages = state["messages"]
-        llm = _get_llm()
-        llm_with_tools = llm.bind_tools(ALL_TOOLS)
-
-        system_msg = memory_manager.get_system_message()
-        all_messages = [system_msg] + list(messages)
-
-        response = llm_with_tools.invoke(all_messages)
-        return {**state, "messages": messages + [response]}
-
-    except Exception as e:
-        logger.error("LLM response failed: %s", e)
-        error_msg = (
-            "I apologize, but I'm having trouble processing your request right now. "
-            "Please try again or contact our support team."
-        )
-        return {
-            **state,
-            "messages": messages + [AIMessage(content=error_msg)],
-            "error": str(e),
-        }
-
-
-# ───────────────────────────────────────────────────────────────
 # Node: Error Handler
 # ───────────────────────────────────────────────────────────────
 
 def error_handler(state: AgentState) -> AgentState:
-    """Handle errors gracefully and recover when possible."""
+    """Handle errors gracefully."""
     error = state.get("error", "Unknown error")
     logger.error("Agent error in session %s: %s", state.get("session_id"), error)
 
-    messages = state["messages"]
+    messages = state.get("messages", [])
     recovery_msg = (
         "I encountered a technical issue while processing your request. "
-        "I've logged the error for our team. In the meantime, could you rephrase your question? "
+        "I've logged the error for our team. Could you rephrase your question? "
         "Or if you prefer, I can connect you with a human representative."
     )
 
@@ -184,44 +280,21 @@ def error_handler(state: AgentState) -> AgentState:
 
 
 # ───────────────────────────────────────────────────────────────
-# Tool Node
-# ───────────────────────────────────────────────────────────────
-
-tool_node = ToolNode(ALL_TOOLS)
-
-
-# ───────────────────────────────────────────────────────────────
 # Conditional Routing
 # ───────────────────────────────────────────────────────────────
 
-def route_after_intent(state: AgentState) -> str:
-    """After intent classification, always go to LLM response."""
+def route_after_dispatch(state: AgentState) -> str:
+    """After tool dispatch, always go to response generation."""
     if state.get("error"):
         return "error_handler"
-    return "llm_response"
+    return "llm_respond"
 
 
-def route_after_llm(state: AgentState) -> str:
-    """After LLM response, check if it wants to call tools or is done."""
+def route_after_respond(state: AgentState) -> str:
+    """After response generation, go to entity extraction."""
     if state.get("error"):
         return "error_handler"
-
-    messages = state.get("messages", [])
-    if not messages:
-        return "extract_entities"
-
-    last_message = messages[-1]
-    if isinstance(last_message, AIMessage) and getattr(last_message, "tool_calls", None):
-        return "tools"
-
     return "extract_entities"
-
-
-def route_after_tools(state: AgentState) -> str:
-    """After tools execute, route back to LLM to process tool results."""
-    if state.get("error"):
-        return "error_handler"
-    return "llm_response"
 
 
 # ───────────────────────────────────────────────────────────────
@@ -229,57 +302,38 @@ def route_after_tools(state: AgentState) -> str:
 # ───────────────────────────────────────────────────────────────
 
 def build_agent_graph() -> StateGraph:
-    """Construct and return the compiled LangGraph state graph.
+    """Construct the compiled LangGraph state graph.
 
     Flow:
-        classify_intent → llm_response → router
-                          ↑                |
-                          |           tools (if tool_calls)
-                          |                |
-                          └────────────────┘
-                          |
-                          v
-                    extract_entities → END
+        entry → dispatch_tools → llm_respond → extract_entities → END
     """
     workflow = StateGraph(AgentState)
 
     # Add nodes
-    workflow.add_node("classify_intent", classify_intent)
+    workflow.add_node("dispatch_tools", dispatch_tools)
+    workflow.add_node("llm_respond", llm_respond)
     workflow.add_node("extract_entities", extract_entities)
-    workflow.add_node("llm_response", llm_response)
     workflow.add_node("error_handler", error_handler)
-    workflow.add_node("tools", tool_node)
 
     # Entry point
-    workflow.set_entry_point("classify_intent")
+    workflow.set_entry_point("dispatch_tools")
 
-    # classify_intent → llm_response (always)
+    # dispatch_tools → llm_respond (always)
     workflow.add_conditional_edges(
-        "classify_intent",
-        route_after_intent,
+        "dispatch_tools",
+        route_after_dispatch,
         {
-            "llm_response": "llm_response",
+            "llm_respond": "llm_respond",
             "error_handler": "error_handler",
         },
     )
 
-    # llm_response → tools (if tool_calls) OR extract_entities (if done)
+    # llm_respond → extract_entities
     workflow.add_conditional_edges(
-        "llm_response",
-        route_after_llm,
+        "llm_respond",
+        route_after_respond,
         {
-            "tools": "tools",
             "extract_entities": "extract_entities",
-            "error_handler": "error_handler",
-        },
-    )
-
-    # tools → llm_response (loop back to process tool results)
-    workflow.add_conditional_edges(
-        "tools",
-        route_after_tools,
-        {
-            "llm_response": "llm_response",
             "error_handler": "error_handler",
         },
     )
