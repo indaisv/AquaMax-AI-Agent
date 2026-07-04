@@ -13,8 +13,8 @@
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/indaisv/aquamax-agent.git
-cd aquamax-agent
+git clone https://github.com/indaisv/AquaMax-AI-Agent.git
+cd AquaMax-AI-Agent
 ```
 
 ### 2. Create a Virtual Environment
@@ -120,7 +120,7 @@ pytest tests/ -v
 ## Project Structure After Setup
 
 ```
-aquamax-agent/
+AquaMax-AI-Agent/
 ├── .env                          # Your API keys (gitignored)
 ├── venv/                         # Virtual environment
 ├── data/

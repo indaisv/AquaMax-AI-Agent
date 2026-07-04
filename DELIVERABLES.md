@@ -26,7 +26,7 @@
 
 7. **Wrote comprehensive test suite** with pytest including unit tests for tools, database layer tests, and FastAPI integration tests — achieving test coverage for core business logic.
 
-8. **Deployed sample catalog of 30+ products** with fuzzy search, condition-based filtering, and AI-powered scoring — enabling intelligent product recommendations based on medical conditions and budget.
+8. **Deployed sample catalog of 40 products** with keyword search, condition-based filtering, and AI-powered scoring — enabling intelligent product recommendations based on medical conditions and budget.
 
 ---
 
