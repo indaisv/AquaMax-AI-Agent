@@ -41,28 +41,25 @@ AquaMax AI is a **production-grade AI Agent** built for AquaMax Rehab Equipment,
 
 ## Screenshots
 
-> **Coming soon:** These screenshots will be captured live during the demo session.
-> Placeholder paths are set — screenshots will be saved to `assets/` folder.
-
 ### Chat Interface
 
 ![Chat Interface](assets/screenshot-chat.png)
-*Streamlit chat UI with AI agent conversation*
+*Streamlit chat UI with AI agent conversation recommending a TENS unit for back pain*
 
 ### Product Catalog
 
 ![Product Catalog](assets/screenshot-catalog.png)
-*Browse and search 40+ rehabilitation equipment products*
+*Browse and search 40+ rehabilitation equipment products across 14 categories*
 
 ### Leads Dashboard
 
 ![Leads Dashboard](assets/screenshot-leads.png)
-*View captured customer leads and contact information*
+*View captured customer leads and contact information from agent conversations*
 
 ### FastAPI Documentation
 
 ![API Docs](assets/screenshot-api-docs.png)
-*Auto-generated OpenAPI/Swagger documentation*
+*Auto-generated OpenAPI/Swagger documentation with all endpoints*
 
 ---
 
